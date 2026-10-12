@@ -4,5 +4,5 @@ export const CFG = {
   key: "YOUR-SUPABASE-ANON-KEY",
   researcher: "Eklavya",
   institution: "Manipal University Jaipur",
-  email: "your-email@example.com",
+  email: "eklavy.2603110059@muj.manipal.com",
 };

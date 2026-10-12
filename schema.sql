@@ -1,47 +1,18 @@
--- Schema for "Youth Aspirations & India" Research Study
--- Run this script in the Supabase SQL Editor (Dashboard > SQL Editor)
-
--- 1. Create the responses table
-CREATE TABLE IF NOT EXISTS public.responses (
-  participant_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  survey_version TEXT NOT NULL,
-  consent BOOLEAN NOT NULL CHECK (consent = true),
-  duration_s INT NOT NULL CHECK (duration_s >= 0 AND duration_s <= 86400),
-  profile JSONB NOT NULL CHECK (octet_length(profile::text) < 4000),
-  answers JSONB NOT NULL CHECK (octet_length(answers::text) < 30000)
+-- Run once in Supabase: SQL Editor -> New query. Replace ADMIN_EMAIL_HERE first.
+create table public.responses (
+  participant_id uuid primary key,
+  created_at timestamptz not null default now(),
+  survey_version text not null,
+  consent boolean not null check (consent),
+  duration_s int check (duration_s between 0 and 86400),
+  profile jsonb not null check (pg_column_size(profile) < 4000),
+  answers jsonb not null check (pg_column_size(answers) < 30000)
 );
-
--- 2. Enable Row Level Security (RLS)
-ALTER TABLE public.responses ENABLE ROW LEVEL SECURITY;
-
--- 3. Revoke all permissions by default
-REVOKE ALL ON public.responses FROM PUBLIC, anon, authenticated;
-
--- 4. Grant least-privilege access
-GRANT INSERT ON public.responses TO anon;
-GRANT SELECT ON public.responses TO authenticated;
-
--- 5. Policies:
--- Anonymous participants can only INSERT valid, consented responses with version '1.0'
-DROP POLICY IF EXISTS "Anon insert responses" ON public.responses;
-CREATE POLICY "Anon insert responses"
-ON public.responses
-FOR INSERT
-TO anon
-WITH CHECK (
-  consent = true AND survey_version = '1.0'
-);
-
--- Authenticated admin can SELECT responses
--- REPLACE 'ADMIN_EMAIL_HERE' with the admin's email address created in Supabase Auth
-DROP POLICY IF EXISTS "Admin select responses" ON public.responses;
-CREATE POLICY "Admin select responses"
-ON public.responses
-FOR SELECT
-TO authenticated
-USING (
-  (auth.jwt()->>'email') = 'unskilled179@gmail.com' -- Change to your admin email address
-);
-
--- No UPDATE or DELETE policies are created to guarantee immutability of collected research data.
+alter table public.responses enable row level security;
+revoke all on public.responses from anon, authenticated;
+grant insert on public.responses to anon;
+grant select on public.responses to authenticated;
+-- Visitors can ONLY insert. They cannot read, update or delete anything.
+create policy "submit only" on public.responses for insert to anon with check (consent and survey_version = '1.0');
+-- Only this one logged-in account can read.
+create policy "admin read" on public.responses for select to authenticated using ((auth.jwt() ->> 'email') = 'ADMIN_EMAIL_HERE');

@@ -1,11 +1,8 @@
-// Supabase and Researcher Configuration
-// Replace url and key with your Supabase Project URL and public anon key.
-// The anon key is safe to expose in client-side code when Row Level Security (RLS) is enabled.
-
+// Fill these in (the anon key is PUBLIC by design; your data is protected by the row-level security in schema.sql).
 export const CFG = {
-  url: "https://xyzcompany.supabase.co", // Replace with your Supabase project URL
-  key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.placeholder", // Replace with your Supabase anon/public key
+  url: "https://YOUR-PROJECT.supabase.co",
+  key: "YOUR-SUPABASE-ANON-KEY",
   researcher: "Eklavya",
   institution: "Manipal University Jaipur",
-  email: "unskilled179@gmail.com",
+  email: "your-email@example.com",
 };

@@ -1,0 +1,311 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Youth Aspirations &amp; India</title>
+    <meta name="description" content="Anonymous academic research survey exploring youth aspirations, perceptions of India, and migration intentions among Indian college students." />
+    <meta property="og:title" content="Youth Aspirations &amp; India" />
+    <meta property="og:description" content="Anonymous academic research survey exploring youth aspirations, perceptions of India, and migration intentions among Indian college students." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary" />
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="bar"><i id="fill"></i></div>
+    <main id="app"></main>
+
+    <script type="module">
+      import { CFG } from "./config.js";
+      import { VERSION, S, PROFILE, build } from "./survey.js";
+      import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+      let db = null;
+      try {
+        if (CFG.url && CFG.key && !CFG.url.includes("xyzcompany") && !CFG.url.includes("placeholder")) {
+          db = createClient(CFG.url, CFG.key);
+        }
+      } catch (err) {
+        console.warn("Supabase init error:", err);
+      }
+
+      const app = document.getElementById("app");
+      const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+      let step = "intro";
+      let si = 0;
+      let secs = [];
+      let Q = {};
+      let prof = {};
+      let ans = {};
+      let err = "";
+      let busy = false;
+      const t0 = Date.now();
+
+      function qHtml(q, lastScale) {
+        let b = "";
+        let lg = "";
+        if (q.k === "scale") {
+          if (q.s !== lastScale.v) {
+            lg = `<div class="lg">${S[q.s].map((l, i) => `<b>${i + 1}</b> ${esc(l)}`).join(" &nbsp;·&nbsp; ")}</div>`;
+            lastScale.v = q.s;
+          }
+          b = `<div class="pills">${[1, 2, 3, 4, 5].map((n) => `<button type="button" data-q="${q.id}" data-v="${n}" class="${ans[q.id]?.v === n ? "on" : ""}">${n}</button>`).join("")}</div>`;
+        } else if (q.k === "single" || q.k === "multi") {
+          const cur = ans[q.id]?.v;
+          b = q.o.map(([v, l]) => `<label class="opt"><input type="${q.k === "single" ? "radio" : "checkbox"}" name="${q.id}" data-q="${q.id}" value="${esc(v)}" ${(q.k === "single" ? cur === v : (cur || []).includes(v)) ? "checked" : ""}> <span>${esc(l)}</span></label>`).join("");
+        } else {
+          const n = q.k === "text3" ? 3 : 1;
+          const cur = ans[q.id]?.v || [];
+          b = Array.from({ length: n }, (_, i) => `<input class="tx" data-t="${q.id}" data-i="${i}" maxlength="250" placeholder="${n > 1 ? i + 1 + "." : "Optional"}" value="${esc(cur[i] || "")}">`).join("");
+        }
+        const row = q.k === "scale" && q.s !== "cnd" && q.s !== "agr" && q.id.match(/^(imp|sat)_/);
+        return lg + `<div class="q ${row ? "row" : ""}"><p>${esc(q.t)}</p>${b}</div>`;
+      }
+
+      function pHtml(f) {
+        const v = prof[f.id] ?? "";
+        const inp = f.k === "sel"
+          ? `<select data-p="${f.id}"><option value="">Select…</option>${f.o.map(([a, l]) => `<option value="${esc(a)}" ${v === a ? "selected" : ""}>${esc(l)}</option>`).join("")}</select>`
+          : `<input data-p="${f.id}" ${f.k === "num" ? 'type="number" min="18" max="45" inputmode="numeric"' : 'maxlength="120"'} value="${esc(v)}">`;
+        return `<div class="q"><label>${esc(f.t)}</label>${inp}</div>`;
+      }
+
+      function render() {
+        let h = "";
+        let pct = 0;
+
+        if (step === "intro") {
+          h = `
+            <div style="display:flex;justify-content:flex-end;margin-bottom:12px;">
+              <a href="admin.html" class="lnk" style="font-size:0.82rem;">Researcher Dashboard →</a>
+            </div>
+            <p class="k">Academic research study</p>
+            <h1>Youth Aspirations &amp; India</h1>
+            <p class="lead">This anonymous academic survey explores the aspirations, expectations, and migration intentions of Indian college students.</p>
+            <p class="meta">Estimated time: 5–8 minutes</p>
+            <button class="go" data-go="consent">Start Survey</button>
+          `;
+        } else if (step === "consent") {
+          h = `
+            <p class="k">Participant information</p>
+            <h2>Before you begin</h2>
+            <ul class="info">
+              <li><b>Purpose.</b> To understand what Indian college students expect from India and their intentions regarding study, work and settlement in India or abroad.</li>
+              <li><b>Who can take part.</b> Students currently enrolled in a college or university in India, aged 18 or over.</li>
+              <li><b>Duration.</b> About 5–8 minutes.</li>
+              <li><b>Voluntary.</b> Participation is voluntary. You may stop at any time before submitting by closing this page; nothing is saved until you submit. You can skip any question you are unsure about by choosing the neutral option or leaving optional fields blank.</li>
+              <li><b>Anonymity.</b> We do not collect your name, email, phone number or IP address. Each response gets a random ID. College name is optional.</li>
+              <li><b>Data use and access.</b> Responses are used only for academic research and reported in aggregate. Only the researcher can access the data.</li>
+              <li><b>Contact.</b> ${esc(CFG.researcher)}, ${esc(CFG.institution)} — <a href="mailto:${esc(CFG.email)}">${esc(CFG.email)}</a></li>
+            </ul>
+            <label class="opt">
+              <input type="checkbox" id="consent">
+              <span>I agree to participate in this research study.</span>
+            </label>
+            <p class="err">${err}</p>
+            <button class="go" data-go="profile">Continue</button>
+          `;
+        } else if (step === "profile") {
+          pct = 8;
+          h = `
+            <p class="k">Section A</p>
+            <h2>About you</h2>
+            <p class="sub">Used only to compare groups. Nothing here identifies you.</p>
+            ${PROFILE.map(pHtml).join("")}
+            <p class="err">${err}</p>
+            <button class="go" data-go="next">Continue</button>
+          `;
+        } else if (step === "sec") {
+          const s = secs[si];
+          pct = 12 + (si / secs.length) * 88;
+          const last = { v: null };
+          h = `
+            <p class="k">Section ${s.id} · ${si + 1} of ${secs.length}</p>
+            <h2>${esc(s.title)}</h2>
+            <p class="sub">${esc(s.sub)}</p>
+            ${s.qs.map((q) => qHtml(q, last)).join("")}
+            <input class="hp" id="hp" tabindex="-1" autocomplete="off" aria-hidden="true">
+            <p class="err">${err}</p>
+            <button class="go" data-go="next" ${busy ? "disabled" : ""}>
+              ${si === secs.length - 1 ? (busy ? "Submitting…" : "Submit") : "Continue"}
+            </button>
+          `;
+        } else {
+          pct = 100;
+          h = `
+            <h1>Thank you</h1>
+            <p class="lead">Your response has been recorded anonymously. You may now close this page.</p>
+            <p class="meta">Questions about the study: <a href="mailto:${esc(CFG.email)}">${esc(CFG.email)}</a></p>
+            <div style="margin-top:32px;">
+              <a href="admin.html" class="lnk">View Researcher Dashboard →</a>
+            </div>
+          `;
+        }
+
+        app.innerHTML = h;
+        const fill = document.getElementById("fill");
+        if (fill) fill.style.width = pct + "%";
+      }
+
+      function validate() {
+        if (step === "profile") {
+          for (const f of PROFILE) {
+            const v = prof[f.id];
+            if (f.opt) continue;
+            if (v === undefined || v === "" || v === null) return `Please answer: ${f.t}`;
+          }
+          const a = Number(prof.age);
+          if (isNaN(a) || a < 18 || a > 45) return "This study is for participants aged 18 to 45.";
+          return "";
+        }
+        for (const q of secs[si].qs) {
+          if (q.opt) continue;
+          const v = ans[q.id]?.v;
+          if (q.k === "text3") {
+            if (!(v || []).some((x) => x && x.trim())) return "Please enter at least one change.";
+          } else if (q.k === "multi") {
+            if (!v || !v.length) return "Please select at least one option in each question.";
+          } else if (v === undefined || v === null || v === "") {
+            return "Please answer every question on this page.";
+          }
+        }
+        return "";
+      }
+
+      async function submit() {
+        busy = true;
+        render();
+
+        // Honeypot bot protection
+        if (document.getElementById("hp")?.value) {
+          busy = false;
+          step = "done";
+          return render();
+        }
+
+        const row = {
+          participant_id: crypto.randomUUID(),
+          survey_version: VERSION,
+          consent: true,
+          duration_s: Math.max(0, Math.round((Date.now() - t0) / 1000)),
+          profile: prof,
+          answers: ans,
+        };
+
+        // Cache locally for development preview & offline reliability
+        try {
+          const cached = JSON.parse(localStorage.getItem("local_responses") || "[]");
+          cached.push({ ...row, created_at: new Date().toISOString() });
+          localStorage.setItem("local_responses", JSON.stringify(cached));
+        } catch (e) {
+          console.warn("Storage err:", e);
+        }
+
+        let insertError = null;
+        if (db) {
+          try {
+            const { error } = await db.from("responses").insert(row);
+            insertError = error;
+          } catch (e) {
+            insertError = e;
+          }
+        }
+
+        busy = false;
+
+        // If Supabase was configured and explicitly returned an error
+        if (db && insertError) {
+          console.error("Submission failed:", insertError);
+          err = "Sorry, your response could not be saved. Please check your connection and try again.";
+          return render();
+        }
+
+        localStorage.setItem("submitted", "1");
+        step = "done";
+        render();
+      }
+
+      document.addEventListener("click", (e) => {
+        const b = e.target.closest("[data-v]");
+        if (b) {
+          const q = Q[b.dataset.q];
+          if (q) {
+            ans[q.id] = { c: q.c, v: +b.dataset.v };
+            b.parentNode.querySelectorAll("button").forEach((x) => x.classList.toggle("on", x === b));
+          }
+          return;
+        }
+
+        const g = e.target.closest("[data-go]");
+        if (!g || busy) return;
+        err = "";
+
+        if (g.dataset.go === "consent") {
+          step = "consent";
+        } else if (g.dataset.go === "profile") {
+          const consentBox = document.getElementById("consent");
+          if (!consentBox || !consentBox.checked) {
+            err = "Please tick the box to agree to participate.";
+            return render();
+          }
+          step = "profile";
+        } else if (g.dataset.go === "next") {
+          err = validate();
+          if (err) return render();
+
+          if (step === "profile") {
+            secs = build(prof);
+            secs.forEach((s) => s.qs.forEach((q) => (Q[q.id] = q)));
+            step = "sec";
+            si = 0;
+          } else if (si === secs.length - 1) {
+            return submit();
+          } else {
+            si++;
+          }
+        }
+        render();
+        window.scrollTo(0, 0);
+      });
+
+      const onIn = (e) => {
+        const t = e.target;
+        if (t.dataset.p) {
+          prof[t.dataset.p] = t.value;
+        } else if (t.dataset.t) {
+          const q = Q[t.dataset.t];
+          if (q) {
+            const a = ans[q.id] || { c: q.c, v: [] };
+            if (!Array.isArray(a.v)) a.v = [];
+            a.v[+t.dataset.i] = t.value;
+            ans[q.id] = a;
+          }
+        } else if (t.dataset.q && t.type === "radio") {
+          const q = Q[t.dataset.q];
+          if (q) ans[t.dataset.q] = { c: q.c, v: t.value };
+        } else if (t.dataset.q && t.type === "checkbox") {
+          const q = Q[t.dataset.q];
+          if (!q) return;
+          const boxes = [...document.querySelectorAll(`input[name="${q.id}"]`)];
+          if (q.x) {
+            boxes.forEach((x) => {
+              if (t.checked && t.value === q.x ? x !== t : t.checked && x.value === q.x) {
+                x.checked = false;
+              }
+            });
+          }
+          if (q.max && boxes.filter((x) => x.checked).length > q.max) {
+            t.checked = false;
+          }
+          ans[q.id] = { c: q.c, v: boxes.filter((x) => x.checked).map((x) => x.value) };
+        }
+      };
+
+      document.addEventListener("input", onIn);
+      document.addEventListener("change", onIn);
+
+      render();
+    </script>
+  </body>
+</html>

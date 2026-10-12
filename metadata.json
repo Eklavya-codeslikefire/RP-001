@@ -1,0 +1,6 @@
+{
+  "name": "Youth Aspirations & India",
+  "description": "Anonymous academic research survey exploring youth aspirations, perceptions of India, and migration intentions among Indian college students.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

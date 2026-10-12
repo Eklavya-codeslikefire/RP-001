@@ -1,0 +1,846 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="robots" content="noindex, nofollow" />
+    <title>Researcher Dashboard — Youth Aspirations &amp; India</title>
+    <link rel="stylesheet" href="./style.css" />
+  </head>
+  <body>
+    <div id="bar"><i id="fill" style="width:100%;"></i></div>
+    <main class="wide" id="app"></main>
+
+    <script type="module">
+      import { CFG } from "./config.js";
+      import { VERSION, S, DIMS, STREAMS, PROFILE, ABROAD, STAY, build, allQuestions } from "./survey.js";
+      import { createClient } from "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm";
+
+      const app = document.getElementById("app");
+      const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+
+      let supabase = null;
+      let session = null;
+      let rawData = [];
+      let loading = false;
+      let errorMsg = "";
+      let isDemoMode = false;
+
+      // Filter state
+      let filterStream = "all";
+      let filterYear = "all";
+      let filterLevel = "all";
+
+      // Group comparison state
+      let compareVar = "imp_career";
+      let compareGroup = "stream";
+
+      try {
+        if (CFG.url && CFG.key && !CFG.url.includes("xyzcompany") && !CFG.url.includes("placeholder")) {
+          supabase = createClient(CFG.url, CFG.key);
+        }
+      } catch (e) {
+        console.warn("Supabase init error:", e);
+      }
+
+      // Pre-seed sample responses for immediate preview/evaluation if database is not yet live
+      function generateMockResponses(count = 35) {
+        const states = ["Maharashtra", "Karnataka", "Delhi", "Tamil Nadu", "Rajasthan", "Uttar Pradesh", "West Bengal", "Gujarat", "Kerala", "Telangana"];
+        const streamKeys = STREAMS.map((s) => s[0]);
+        const migPlans = ["stay_india", "study_return", "work_temp", "settle_abroad", "undecided", "not_considered"];
+        const res = [];
+        const baseTime = Date.now() - 86400000 * 5;
+
+        for (let i = 0; i < count; i++) {
+          const age = Math.floor(Math.random() * 8) + 18;
+          const stream = streamKeys[Math.floor(Math.random() * streamKeys.length)];
+          const year = String(Math.floor(Math.random() * 4) + 1);
+          const level = Math.random() > 0.25 ? "Undergraduate" : "Postgraduate";
+          const dur = Math.floor(Math.random() * 300) + 240;
+
+          const p = {
+            age: String(age),
+            gender: ["Woman", "Man", "Non-binary / other", "Prefer not to say"][Math.floor(Math.random() * 4)],
+            state: states[Math.floor(Math.random() * states.length)],
+            college_type: "Institute of national importance (IIT/NIT/IIIT etc.)",
+            college_name: "Indian Institute of Technology",
+            degree: "B.Tech",
+            stream,
+            year,
+            level,
+            studied_abroad: Math.random() > 0.85 ? "Yes" : "No",
+            relatives_abroad: Math.random() > 0.6 ? "Yes" : "No",
+            considering_study_abroad: ["Yes", "No", "Undecided"][Math.floor(Math.random() * 3)],
+          };
+
+          const surveySecs = build(p);
+          const ans = {};
+          surveySecs.forEach((sec) => {
+            sec.qs.forEach((q) => {
+              if (q.k === "scale") {
+                ans[q.id] = { c: q.c, v: Math.floor(Math.random() * 3) + 3 };
+              } else if (q.id === "mig_plan") {
+                ans[q.id] = { c: q.c, v: migPlans[Math.floor(Math.random() * migPlans.length)] };
+              } else if (q.k === "multi") {
+                const sampleOpts = (q.o || []).slice(0, 3).map((o) => o[0]);
+                ans[q.id] = { c: q.c, v: sampleOpts };
+              } else if (q.k === "text3") {
+                ans[q.id] = {
+                  c: q.c,
+                  v: [
+                    "Increased funding for research and innovation",
+                    "Better job market alignment with industry needs",
+                    "Higher wages and improved work-life balance",
+                  ],
+                };
+              }
+            });
+          });
+
+          res.push({
+            participant_id: crypto.randomUUID(),
+            created_at: new Date(baseTime + i * 3600000).toISOString(),
+            survey_version: VERSION,
+            consent: true,
+            duration_s: dur,
+            profile: p,
+            answers: ans,
+          });
+        }
+        return res;
+      }
+
+      async function init() {
+        if (supabase) {
+          try {
+            const { data } = await supabase.auth.getSession();
+            session = data?.session;
+            supabase.auth.onAuthStateChange((_event, newSession) => {
+              session = newSession;
+              if (session) {
+                fetchData();
+              } else {
+                render();
+              }
+            });
+            if (session) {
+              fetchData();
+              return;
+            }
+          } catch (e) {
+            console.warn("Auth getSession error:", e);
+          }
+        }
+        render();
+      }
+
+      async function fetchData() {
+        loading = true;
+        errorMsg = "";
+        render();
+
+        try {
+          if (!supabase) throw new Error("Supabase client not initialized.");
+          let all = [];
+          let from = 0;
+          const PAGE_SIZE = 1000;
+          while (true) {
+            const { data, error } = await supabase
+              .from("responses")
+              .select("*")
+              .range(from, from + PAGE_SIZE - 1);
+
+            if (error) throw error;
+            if (!data || data.length === 0) break;
+            all.push(...data);
+            if (data.length < PAGE_SIZE) break;
+            from += PAGE_SIZE;
+          }
+          rawData = all;
+        } catch (err) {
+          console.error("Error loading responses:", err);
+          errorMsg = err.message || "Failed to load responses from Supabase.";
+        } finally {
+          loading = false;
+          render();
+        }
+      }
+
+      function loadDemoData() {
+        isDemoMode = true;
+        const local = JSON.parse(localStorage.getItem("local_responses") || "[]");
+        rawData = local.length > 0 ? [...local, ...generateMockResponses(30)] : generateMockResponses(40);
+        render();
+      }
+
+      function getFilteredData() {
+        return rawData.filter((r) => {
+          const p = r.profile || {};
+          if (filterStream !== "all" && p.stream !== filterStream) return false;
+          if (filterYear !== "all" && p.year !== filterYear) return false;
+          if (filterLevel !== "all" && p.level !== filterLevel) return false;
+          return true;
+        });
+      }
+
+      function calculateMedian(values) {
+        if (!values || !values.length) return 0;
+        const sorted = [...values].sort((a, b) => a - b);
+        const mid = Math.floor(sorted.length / 2);
+        return sorted.length % 2 !== 0 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+      }
+
+      function renderBar(label, count, total) {
+        const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+        return `
+          <div class="bar">
+            <span title="${esc(label)}">${esc(label)}</span>
+            <div class="track"><i style="width:${pct}%;"></i></div>
+            <b>${pct}%</b>
+          </div>
+        `;
+      }
+
+      // Safe CSV formatting preventing formula injection
+      function sanitizeCsv(val) {
+        if (val === null || val === undefined) return '""';
+        let str = String(val);
+        // Prefix with ' if begins with formula characters: = + - @
+        if (/^[=+\-@]/.test(str)) {
+          str = "'" + str;
+        }
+        return `"${str.replace(/"/g, '""')}"`;
+      }
+
+      function exportCsv(type = "anon") {
+        const filtered = getFilteredData();
+        if (!filtered.length) {
+          alert("No responses to export with the current filters.");
+          return;
+        }
+
+        const surveyQuestions = allQuestions();
+
+        let headers = [];
+        if (type === "anon") {
+          headers = [
+            "participant_id",
+            "created_at",
+            "survey_version",
+            "duration_s",
+            "age",
+            "gender",
+            "state",
+            "college_type",
+            "degree",
+            "stream",
+            "year",
+            "level",
+            "studied_abroad",
+            "relatives_abroad",
+            "considering_study_abroad",
+          ];
+        } else if (type === "full") {
+          headers = [
+            "participant_id",
+            "created_at",
+            "survey_version",
+            "duration_s",
+            "age",
+            "gender",
+            "state",
+            "college_type",
+            "college_name",
+            "degree",
+            "stream",
+            "year",
+            "level",
+            "studied_abroad",
+            "relatives_abroad",
+            "considering_study_abroad",
+          ];
+        }
+
+        // Add all survey question columns
+        surveyQuestions.forEach((q) => {
+          if (!headers.includes(q.id)) {
+            headers.push(q.id);
+          }
+        });
+
+        const rows = [headers.map(sanitizeCsv).join(",")];
+
+        filtered.forEach((r) => {
+          const p = r.profile || {};
+          const ans = r.answers || {};
+
+          const rowData = headers.map((col) => {
+            if (col === "participant_id") return sanitizeCsv(r.participant_id);
+            if (col === "created_at") return sanitizeCsv(r.created_at);
+            if (col === "survey_version") return sanitizeCsv(r.survey_version);
+            if (col === "duration_s") return sanitizeCsv(r.duration_s);
+            if (p[col] !== undefined) return sanitizeCsv(p[col]);
+
+            const a = ans[col];
+            if (!a) return '""';
+
+            if (Array.isArray(a.v)) {
+              return sanitizeCsv(a.v.filter(Boolean).join(" | "));
+            }
+            return sanitizeCsv(a.v);
+          });
+
+          rows.push(rowData.join(","));
+        });
+
+        // Prepend UTF-8 BOM
+        const csvContent = "\uFEFF" + rows.join("\r\n");
+        downloadFile(csvContent, `youth_aspirations_${type}_${new Date().toISOString().slice(0, 10)}.csv`, "text/csv;charset=utf-8;");
+      }
+
+      function exportCodebook() {
+        const headers = ["question_id", "construct", "section", "type", "scale_or_options", "text"];
+        const rows = [headers.map(sanitizeCsv).join(",")];
+
+        // Section A (Profile)
+        PROFILE.forEach((f) => {
+          const opts = f.o ? f.o.map((o) => o[1]).join(" | ") : (f.k === "num" ? "Numeric (18-45)" : "Text");
+          rows.push([
+            sanitizeCsv(f.id),
+            sanitizeCsv(f.id),
+            sanitizeCsv("A"),
+            sanitizeCsv(f.k),
+            sanitizeCsv(opts),
+            sanitizeCsv(f.t),
+          ].join(","));
+        });
+
+        // Sections B to F
+        allQuestions().forEach((q) => {
+          let opts = "";
+          if (q.s && S[q.s]) opts = S[q.s].join(" | ");
+          else if (q.o) opts = q.o.map((o) => o[1]).join(" | ");
+          else opts = q.k;
+
+          rows.push([
+            sanitizeCsv(q.id),
+            sanitizeCsv(q.c || q.id),
+            sanitizeCsv(q.section || ""),
+            sanitizeCsv(q.k),
+            sanitizeCsv(opts),
+            sanitizeCsv(q.t),
+          ].join(","));
+        });
+
+        const csvContent = "\uFEFF" + rows.join("\r\n");
+        downloadFile(csvContent, `youth_aspirations_codebook_${VERSION}.csv`, "text/csv;charset=utf-8;");
+      }
+
+      function downloadFile(content, fileName, mimeType) {
+        const blob = new Blob([content], { type: mimeType });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = fileName;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }
+
+      function render() {
+        // 1. Login view if not logged in and not in demo mode
+        if (!session && !isDemoMode) {
+          app.innerHTML = `
+            <div style="max-width:440px;margin:60px auto;">
+              <header style="border:none;margin-bottom:12px;">
+                <a href="index.html" class="lnk">← Back to Participant Survey</a>
+              </header>
+              <p class="k">Researcher Authentication</p>
+              <h2>Dashboard Access</h2>
+              <p class="sub">Sign in with authorized researcher credentials to view aggregate data and export responses.</p>
+              <div class="notice">
+                <b>Database Setup Notice:</b> To connect directly to your live Supabase database, ensure you have set your Supabase Project URL and anon key in <code>config.js</code> and run <code>schema.sql</code>.
+              </div>
+              <form id="login-form">
+                <div class="q">
+                  <label for="admin-email">Email Address</label>
+                  <input type="email" id="admin-email" placeholder="researcher@example.com" value="${esc(CFG.email)}" required />
+                </div>
+                <div class="q">
+                  <label for="admin-password">Password</label>
+                  <input type="password" id="admin-password" placeholder="••••••••" required />
+                </div>
+                <p class="err" id="login-err">${esc(errorMsg)}</p>
+                <div style="display:flex;gap:12px;margin-top:20px;flex-direction:column;">
+                  <button type="submit" class="go" id="btn-login">Sign In</button>
+                  <button type="button" class="go alt" id="btn-demo">Preview Dashboard (Demo Mode)</button>
+                </div>
+              </form>
+            </div>
+          `;
+          return;
+        }
+
+        // 2. Loading indicator
+        if (loading) {
+          app.innerHTML = `
+            <p class="k">Researcher Dashboard</p>
+            <h2>Loading research responses…</h2>
+            <p class="sub">Retrieving data from database…</p>
+          `;
+          return;
+        }
+
+        const filtered = getFilteredData();
+        const totalCount = rawData.length;
+        const filteredCount = filtered.length;
+
+        // Completion times
+        const durationsMinutes = filtered.map((r) => (r.duration_s ? r.duration_s / 60 : 0)).filter((v) => v > 0);
+        const medianDuration = durationsMinutes.length ? calculateMedian(durationsMinutes).toFixed(1) : "—";
+
+        // Distributions
+        const streamCounts = {};
+        const yearCounts = {};
+        const levelCounts = {};
+        const ageBandCounts = { "18–19": 0, "20–21": 0, "22–23": 0, "24+": 0 };
+        const migPlanCounts = {};
+        const reasonsAbroadCounts = {};
+        const reasonsStayCounts = {};
+
+        filtered.forEach((r) => {
+          const p = r.profile || {};
+          const ans = r.answers || {};
+
+          // Stream
+          if (p.stream) streamCounts[p.stream] = (streamCounts[p.stream] || 0) + 1;
+          // Year
+          if (p.year) yearCounts[p.year] = (yearCounts[p.year] || 0) + 1;
+          // Level
+          if (p.level) levelCounts[p.level] = (levelCounts[p.level] || 0) + 1;
+
+          // Age bands
+          const age = Number(p.age);
+          if (age >= 18 && age <= 19) ageBandCounts["18–19"]++;
+          else if (age >= 20 && age <= 21) ageBandCounts["20–21"]++;
+          else if (age >= 22 && age <= 23) ageBandCounts["22–23"]++;
+          else if (age >= 24) ageBandCounts["24+"]++;
+
+          // Migration plan
+          const mp = ans.mig_plan?.v;
+          if (mp) migPlanCounts[mp] = (migPlanCounts[mp] || 0) + 1;
+
+          // Reasons abroad
+          const ra = ans.reasons_abroad?.v;
+          if (Array.isArray(ra)) {
+            ra.forEach((item) => (reasonsAbroadCounts[item] = (reasonsAbroadCounts[item] || 0) + 1));
+          }
+
+          // Reasons stay
+          const rs = ans.reasons_stay?.v;
+          if (Array.isArray(rs)) {
+            rs.forEach((item) => (reasonsStayCounts[item] = (reasonsStayCounts[item] || 0) + 1));
+          }
+        });
+
+        // Expectations vs Satisfaction Gap Table
+        const gapRows = DIMS.map(([id, label]) => {
+          const impKey = `imp_${id}`;
+          const satKey = `sat_${id}`;
+          let impSum = 0, impN = 0;
+          let satSum = 0, satN = 0;
+
+          filtered.forEach((r) => {
+            const ans = r.answers || {};
+            const iv = ans[impKey]?.v;
+            const sv = ans[satKey]?.v;
+            if (typeof iv === "number") { impSum += iv; impN++; }
+            if (typeof sv === "number") { satSum += sv; satN++; }
+          });
+
+          const meanImp = impN ? (impSum / impN).toFixed(2) : "—";
+          const meanSat = satN ? (satSum / satN).toFixed(2) : "—";
+          const gap = (impN && satN) ? ((impSum / impN) - (satSum / satN)).toFixed(2) : "—";
+          const maxN = Math.max(impN, satN);
+
+          return { label, meanImp, meanSat, gap, n: maxN };
+        });
+
+        // Add contextual field dimension
+        let fImpSum = 0, fImpN = 0;
+        let fSatSum = 0, fSatN = 0;
+        filtered.forEach((r) => {
+          const ans = r.answers || {};
+          const iv = ans["imp_field"]?.v;
+          const sv = ans["sat_field"]?.v;
+          if (typeof iv === "number") { fImpSum += iv; fImpN++; }
+          if (typeof sv === "number") { fSatSum += sv; fSatN++; }
+        });
+        const fMeanImp = fImpN ? (fImpSum / fImpN).toFixed(2) : "—";
+        const fMeanSat = fSatN ? (fSatSum / fSatN).toFixed(2) : "—";
+        const fGap = (fImpN && fSatN) ? ((fImpSum / fImpN) - (fSatSum / fSatN)).toFixed(2) : "—";
+        gapRows.push({
+          label: "Career opportunities in specific field (contextual)",
+          meanImp: fMeanImp,
+          meanSat: fMeanSat,
+          gap: fGap,
+          n: Math.max(fImpN, fSatN),
+        });
+
+        // Compare groups calculation
+        const groupValues = {};
+        filtered.forEach((r) => {
+          const p = r.profile || {};
+          const ans = r.answers || {};
+          let gKey = "";
+          if (compareGroup === "stream") {
+            const found = STREAMS.find((s) => s[0] === p.stream);
+            gKey = found ? found[1] : p.stream || "Unspecified";
+          } else if (compareGroup === "year") {
+            gKey = p.year ? `Year ${p.year}` : "Unspecified";
+          } else if (compareGroup === "level") {
+            gKey = p.level || "Unspecified";
+          } else if (compareGroup === "age_band") {
+            const a = Number(p.age);
+            if (a >= 18 && a <= 19) gKey = "18–19";
+            else if (a >= 20 && a <= 21) gKey = "20–21";
+            else if (a >= 22 && a <= 23) gKey = "22–23";
+            else if (a >= 24) gKey = "24+";
+            else gKey = "Other";
+          } else if (compareGroup === "state") {
+            gKey = p.state || "Unspecified";
+          }
+
+          const score = ans[compareVar]?.v;
+          if (typeof score === "number") {
+            if (!groupValues[gKey]) groupValues[gKey] = [];
+            groupValues[gKey].push(score);
+          }
+        });
+
+        const compareRows = Object.entries(groupValues).map(([grp, vals]) => {
+          const sum = vals.reduce((a, b) => a + b, 0);
+          const mean = (sum / vals.length).toFixed(2);
+          return { grp, n: vals.length, mean };
+        }).sort((a, b) => b.mean - a.mean);
+
+        // Open-ended vision responses
+        const openResponses = [];
+        filtered.forEach((r) => {
+          const v = r.answers?.vision_changes?.v;
+          if (Array.isArray(v)) {
+            v.forEach((entry) => {
+              if (entry && entry.trim()) openResponses.push(entry.trim());
+            });
+          }
+        });
+
+        const streamLabelMap = Object.fromEntries(STREAMS);
+        const migPlanLabelMap = {
+          stay_india: "Build future in India",
+          study_return: "Study abroad & return",
+          work_temp: "Work abroad temporarily",
+          settle_abroad: "Settle abroad permanently",
+          undecided: "Undecided",
+          not_considered: "Not considered moving",
+        };
+        const abroadLabelMap = Object.fromEntries(ABROAD);
+        const stayLabelMap = Object.fromEntries(STAY);
+
+        // Scale variables list for "Compare groups"
+        const scaleVars = [
+          ...DIMS.map(([id, l]) => ({ id: `imp_${id}`, name: `Importance: ${l}` })),
+          { id: "imp_field", name: "Importance: Opportunities in Field" },
+          ...DIMS.map(([id, l]) => ({ id: `sat_${id}`, name: `Satisfaction: ${l}` })),
+          { id: "sat_field", name: "Satisfaction: Opportunities in Field" },
+          { id: "mig_study", name: "Intention: Study Abroad" },
+          { id: "mig_return", name: "Intention: Return to India" },
+          { id: "mig_work_temp", name: "Intention: Work Abroad Temporarily" },
+          { id: "mig_settle", name: "Intention: Permanent Settlement Abroad" },
+          { id: "mig_stay", name: "Intention: Long-term Career in India" },
+          { id: "mig_conditional", name: "Conditional Interest on Improvement" },
+          { id: "influence_family", name: "Influence: Family Preferences" },
+          { id: "influence_peers", name: "Influence: Peers & Friends" },
+          { id: "vision_optimism", name: "Optimism for India (10 Years)" },
+        ];
+
+        app.innerHTML = `
+          <header>
+            <div>
+              <p class="k">Researcher Portal</p>
+              <h1 style="font-size:1.8rem;margin:0;">Youth Aspirations &amp; India</h1>
+            </div>
+            <div style="display:flex;gap:12px;align-items:center;">
+              <a href="index.html" class="lnk">Participant Survey</a>
+              <button class="lnk" id="btn-signout" style="color:#b3261e;">Sign Out</button>
+            </div>
+          </header>
+
+          ${isDemoMode ? '<div class="notice"><b>Demo Mode Active:</b> Displaying demo sample dataset. Connect real Supabase credentials in <code>config.js</code> to stream live submissions directly.</div>' : ""}
+
+          <!-- Filters -->
+          <div class="filters">
+            <label>
+              Stream
+              <select id="filter-stream">
+                <option value="all" ${filterStream === "all" ? "selected" : ""}>All Streams</option>
+                ${STREAMS.map(([k, l]) => `<option value="${esc(k)}" ${filterStream === k ? "selected" : ""}>${esc(l)}</option>`).join("")}
+              </select>
+            </label>
+            <label>
+              Year of Study
+              <select id="filter-year">
+                <option value="all" ${filterYear === "all" ? "selected" : ""}>All Years</option>
+                <option value="1" ${filterYear === "1" ? "selected" : ""}>Year 1</option>
+                <option value="2" ${filterYear === "2" ? "selected" : ""}>Year 2</option>
+                <option value="3" ${filterYear === "3" ? "selected" : ""}>Year 3</option>
+                <option value="4" ${filterYear === "4" ? "selected" : ""}>Year 4</option>
+                <option value="5 or above" ${filterYear === "5 or above" ? "selected" : ""}>Year 5+</option>
+              </select>
+            </label>
+            <label>
+              Level of Study
+              <select id="filter-level">
+                <option value="all" ${filterLevel === "all" ? "selected" : ""}>All Levels</option>
+                <option value="Undergraduate" ${filterLevel === "Undergraduate" ? "selected" : ""}>Undergraduate</option>
+                <option value="Postgraduate" ${filterLevel === "Postgraduate" ? "selected" : ""}>Postgraduate</option>
+                <option value="Other" ${filterLevel === "Other" ? "selected" : ""}>Other</option>
+              </select>
+            </label>
+          </div>
+
+          <!-- Summary Stats -->
+          <div class="stat">
+            <b>${filteredCount}</b> responses shown (of ${totalCount} total) &nbsp;·&nbsp;
+            Median completion time: <b>${medianDuration} minutes</b>
+          </div>
+
+          <!-- Exports -->
+          <div class="btn-group">
+            <button class="go alt" id="export-anon" style="padding:10px 18px;font-size:0.9rem;">Export Anonymised CSV</button>
+            <button class="go alt" id="export-full" style="padding:10px 18px;font-size:0.9rem;">Export Full CSV</button>
+            <button class="go alt" id="export-codebook" style="padding:10px 18px;font-size:0.9rem;">Export Codebook CSV</button>
+          </div>
+
+          <!-- Participant Demographics & Migration Charts -->
+          <h2>Sample Characteristics</h2>
+          <div class="grid">
+            <div class="bar-box">
+              <h3>Academic Stream</h3>
+              ${STREAMS.map(([k, l]) => renderBar(l, streamCounts[k] || 0, filteredCount)).join("")}
+            </div>
+
+            <div class="bar-box">
+              <h3>Year of Study</h3>
+              ${["1", "2", "3", "4", "5 or above"].map((y) => renderBar(`Year ${y}`, yearCounts[y] || 0, filteredCount)).join("")}
+            </div>
+
+            <div class="bar-box">
+              <h3>Level of Study</h3>
+              ${["Undergraduate", "Postgraduate", "Other"].map((lvl) => renderBar(lvl, levelCounts[lvl] || 0, filteredCount)).join("")}
+            </div>
+
+            <div class="bar-box">
+              <h3>Age Band</h3>
+              ${Object.entries(ageBandCounts).map(([b, cnt]) => renderBar(b, cnt, filteredCount)).join("")}
+            </div>
+          </div>
+
+          <div style="margin-top:28px;">
+            <h3>Primary Future Migration Plan</h3>
+            <div style="max-width:640px;">
+              ${Object.entries(migPlanLabelMap).map(([k, label]) => renderBar(label, migPlanCounts[k] || 0, filteredCount)).join("")}
+            </div>
+          </div>
+
+          <hr style="border:0;border-top:1px solid var(--line);margin:40px 0;" />
+
+          <!-- Expectations vs Satisfaction Gap Analysis -->
+          <h2>Expectations vs. Satisfaction Gap Analysis</h2>
+          <p class="sub">Gap = Mean Importance − Mean Satisfaction. Positive gap indicates unfulfilled aspirations.</p>
+          <div class="scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th>Dimension</th>
+                  <th style="text-align:right;">Mean Importance</th>
+                  <th style="text-align:right;">Mean Satisfaction</th>
+                  <th style="text-align:right;">Aspiration Gap</th>
+                  <th style="text-align:right;">n</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${gapRows.map((r) => `
+                  <tr>
+                    <td>${esc(r.label)}</td>
+                    <td style="text-align:right;">${r.meanImp}</td>
+                    <td style="text-align:right;">${r.meanSat}</td>
+                    <td style="text-align:right;font-weight:${r.gap !== "—" && Number(r.gap) > 1.0 ? "600" : "normal"};">
+                      ${r.gap !== "—" && Number(r.gap) > 0 ? "+" + r.gap : r.gap}
+                    </td>
+                    <td style="text-align:right;color:var(--mut);">${r.n}</td>
+                  </tr>
+                `).join("")}
+              </tbody>
+            </table>
+          </div>
+
+          <hr style="border:0;border-top:1px solid var(--line);margin:40px 0;" />
+
+          <!-- Group Comparisons -->
+          <h2>Compare Groups</h2>
+          <p class="sub">Cross-tabulate any scale variable across demographic segments.</p>
+          <div class="filters" style="margin-bottom:16px;">
+            <label>
+              Variable
+              <select id="compare-var">
+                ${scaleVars.map((v) => `<option value="${esc(v.id)}" ${compareVar === v.id ? "selected" : ""}>${esc(v.name)}</option>`).join("")}
+              </select>
+            </label>
+            <label>
+              Group By
+              <select id="compare-group">
+                <option value="stream" ${compareGroup === "stream" ? "selected" : ""}>Academic Stream</option>
+                <option value="year" ${compareGroup === "year" ? "selected" : ""}>Year of Study</option>
+                <option value="level" ${compareGroup === "level" ? "selected" : ""}>Level of Study</option>
+                <option value="age_band" ${compareGroup === "age_band" ? "selected" : ""}>Age Band</option>
+                <option value="state" ${compareGroup === "state" ? "selected" : ""}>State / UT</option>
+              </select>
+            </label>
+          </div>
+
+          <div class="scroll">
+            <table style="max-width:640px;">
+              <thead>
+                <tr>
+                  <th>Subgroup</th>
+                  <th style="text-align:right;">n</th>
+                  <th style="text-align:right;">Mean Score (1–5)</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${compareRows.length ? compareRows.map((r) => `
+                  <tr>
+                    <td>${esc(r.grp)}</td>
+                    <td style="text-align:right;color:var(--mut);">${r.n}</td>
+                    <td style="text-align:right;font-weight:600;">${r.mean}</td>
+                  </tr>
+                `).join("") : '<tr><td colspan="3" style="text-align:center;color:var(--mut);">No data available for this selection.</td></tr>'}
+              </tbody>
+            </table>
+          </div>
+
+          <hr style="border:0;border-top:1px solid var(--line);margin:40px 0;" />
+
+          <!-- Decision Drivers: Abroad vs Staying -->
+          <h2>Key Decision Drivers</h2>
+          <div class="grid">
+            <div class="bar-box">
+              <h3>Factors Attracting Youth Abroad</h3>
+              ${ABROAD.map(([k, label]) => renderBar(label, reasonsAbroadCounts[k] || 0, filteredCount)).join("")}
+            </div>
+
+            <div class="bar-box">
+              <h3>Factors Supporting Staying in India</h3>
+              ${STAY.map(([k, label]) => renderBar(label, reasonsStayCounts[k] || 0, filteredCount)).join("")}
+            </div>
+          </div>
+
+          <hr style="border:0;border-top:1px solid var(--line);margin:40px 0;" />
+
+          <!-- Open-ended Vision for India -->
+          <h2>Open-Ended Aspirations: Top Changes Desired in India</h2>
+          <p class="sub">Direct responses from participants regarding the most important changes they wish to see over the next 10 years.</p>
+          <div style="border:1px solid var(--line);padding:16px 20px;border-radius:2px;background:var(--bg);">
+            <ul class="open">
+              ${openResponses.length ? openResponses.map((msg) => `<li>${esc(msg)}</li>`).join("") : '<li style="color:var(--mut);">No open-ended responses entered.</li>'}
+            </ul>
+          </div>
+        `;
+
+        bindEvents();
+      }
+
+      function bindEvents() {
+        const form = document.getElementById("login-form");
+        if (form) {
+          form.onsubmit = async (e) => {
+            e.preventDefault();
+            const email = document.getElementById("admin-email").value.trim();
+            const password = document.getElementById("admin-password").value;
+            const errEl = document.getElementById("login-err");
+            const btn = document.getElementById("btn-login");
+
+            errEl.textContent = "";
+            btn.disabled = true;
+            btn.textContent = "Signing In…";
+
+            if (!supabase) {
+              errEl.textContent = "Supabase client is not configured with a valid project URL in config.js.";
+              btn.disabled = false;
+              btn.textContent = "Sign In";
+              return;
+            }
+
+            try {
+              const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+              if (error) throw error;
+              session = data.session;
+              await fetchData();
+            } catch (err) {
+              errEl.textContent = err.message || "Invalid credentials.";
+              btn.disabled = false;
+              btn.textContent = "Sign In";
+            }
+          };
+
+          const btnDemo = document.getElementById("btn-demo");
+          if (btnDemo) {
+            btnDemo.onclick = () => loadDemoData();
+          }
+          return;
+        }
+
+        const btnSignout = document.getElementById("btn-signout");
+        if (btnSignout) {
+          btnSignout.onclick = async () => {
+            if (supabase && session) {
+              await supabase.auth.signOut();
+            }
+            session = null;
+            isDemoMode = false;
+            rawData = [];
+            render();
+          };
+        }
+
+        const fStream = document.getElementById("filter-stream");
+        if (fStream) fStream.onchange = (e) => { filterStream = e.target.value; render(); };
+
+        const fYear = document.getElementById("filter-year");
+        if (fYear) fYear.onchange = (e) => { filterYear = e.target.value; render(); };
+
+        const fLevel = document.getElementById("filter-level");
+        if (fLevel) fLevel.onchange = (e) => { filterLevel = e.target.value; render(); };
+
+        const cVar = document.getElementById("compare-var");
+        if (cVar) cVar.onchange = (e) => { compareVar = e.target.value; render(); };
+
+        const cGroup = document.getElementById("compare-group");
+        if (cGroup) cGroup.onchange = (e) => { compareGroup = e.target.value; render(); };
+
+        const btnAnon = document.getElementById("export-anon");
+        if (btnAnon) btnAnon.onclick = () => exportCsv("anon");
+
+        const btnFull = document.getElementById("export-full");
+        if (btnFull) btnFull.onclick = () => exportCsv("full");
+
+        const btnCodebook = document.getElementById("export-codebook");
+        if (btnCodebook) btnCodebook.onclick = () => exportCodebook();
+      }
+
+      init();
+    </script>
+  </body>
+</html>
